@@ -1,20 +1,32 @@
 {
   "name": "@pipeworx/mcp-usaspending",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "USAspending MCP — Federal spending data from USAspending.gov API",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
+  "bin": {
+    "mcp-usaspending": "bin/cli.js"
+  },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "usaspending"],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/pipeworx-io/mcp-usaspending"
+    "url": "git+https://github.com/pipeworx-io/mcp-usaspending.git"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "tsx": "^4.19.0"
+  },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^4.20260405.1"
+  },
+  "pipeworx": {
+    "sourceHash": "v1-9982366bdbe5c36501f7fc7ba5df0a9d67a644874c66046ba46dd21472ffc62a",
+    "sourceCommit": "b0fb3c31386cf0256dcf1e2f1b3440435a87ec35"
   }
 }
