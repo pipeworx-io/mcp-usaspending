@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-usaspending",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "USAspending MCP — Federal spending data from USAspending.gov API",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-9982366bdbe5c36501f7fc7ba5df0a9d67a644874c66046ba46dd21472ffc62a",
-    "sourceCommit": "b0fb3c31386cf0256dcf1e2f1b3440435a87ec35"
+    "sourceHash": "v1-0b8e5b53ea033d2434b1acea9a35f765353903a96c4c5ff460f36feab5d4407f",
+    "sourceCommit": "66a0692f029179984440cef6938cba7fdd41d66d"
   }
 }
