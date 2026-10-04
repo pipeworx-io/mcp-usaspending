@@ -838,7 +838,7 @@ const tools: McpToolExport['tools'] = [
         },
         recipient_name: { type: 'string', description: 'Contractor/recipient name (e.g., "Lockheed Martin"). Use for awards won by a company; do not put company names in keywords.' },
         state: { type: 'string', description: 'Place-of-performance US state, 2-letter code (e.g., "MD", "TX"). Filters to contracts performed in that state.' },
-        agency: { type: 'string', description: 'Awarding agency name (e.g., "Department of Defense")' },
+        agency: { type: 'string', description: 'Awarding agency — full toptier name ("Department of Defense") or the common abbreviation (DOD, DHS, VA, HHS, DOE, NASA, GSA, USDA, EPA…), which is expanded for you.' },
         start_date: { type: 'string', description: 'Start date in YYYY-MM-DD format' },
         end_date: { type: 'string', description: 'End date in YYYY-MM-DD format' },
         naics: { type: 'string', description: 'NAICS code to filter by (e.g., "541512")' },
@@ -1030,6 +1030,49 @@ const SET_ASIDE_FAMILIES: Array<{ label: string; aliases: RegExp; pattern: strin
  * function must NOT report an empty result as authoritative — see the guard
  * in awardSearchSupabase.
  */
+// Toptier-agency aliases. USAspending's agency filter wants the toptier NAME
+// ("Department of Defense"); the fast-path RPC substring-matches the same
+// column. A caller sending the abbreviation every other tool in this pack
+// advertises ("DOD", "DHS", "VA", "NASA") got a clean zero on both paths —
+// measured 2026-10-04: {keywords:["cybersecurity"], agency:"DOD"} → 0 awards,
+// agency:"Department of Defense" → 10. Expand the abbreviation; pass anything
+// else through unchanged so a full or partial name still substring-matches.
+const AGENCY_ALIASES: Record<string, string> = {
+  DOD: 'Department of Defense', DEFENSE: 'Department of Defense', PENTAGON: 'Department of Defense',
+  DHS: 'Department of Homeland Security', 'HOMELAND SECURITY': 'Department of Homeland Security',
+  VA: 'Department of Veterans Affairs', 'VETERANS AFFAIRS': 'Department of Veterans Affairs',
+  HHS: 'Department of Health and Human Services',
+  DOE: 'Department of Energy', ENERGY: 'Department of Energy',
+  DOJ: 'Department of Justice', JUSTICE: 'Department of Justice',
+  DOT: 'Department of Transportation', TRANSPORTATION: 'Department of Transportation',
+  DOI: 'Department of the Interior', INTERIOR: 'Department of the Interior',
+  DOL: 'Department of Labor', LABOR: 'Department of Labor',
+  DOC: 'Department of Commerce', COMMERCE: 'Department of Commerce',
+  DOS: 'Department of State', STATE: 'Department of State', 'STATE DEPARTMENT': 'Department of State',
+  ED: 'Department of Education', EDUCATION: 'Department of Education',
+  USDA: 'Department of Agriculture', AGRICULTURE: 'Department of Agriculture',
+  HUD: 'Department of Housing and Urban Development',
+  TREASURY: 'Department of the Treasury', 'DEPARTMENT OF TREASURY': 'Department of the Treasury',
+  NASA: 'National Aeronautics and Space Administration',
+  GSA: 'General Services Administration',
+  EPA: 'Environmental Protection Agency',
+  SBA: 'Small Business Administration',
+  SSA: 'Social Security Administration',
+  NSF: 'National Science Foundation',
+  USAID: 'Agency for International Development',
+  OPM: 'Office of Personnel Management',
+  NRC: 'Nuclear Regulatory Commission',
+  FCC: 'Federal Communications Commission',
+  SEC: 'Securities and Exchange Commission',
+};
+
+export function normalizeAgency(raw: unknown): string | null {
+  const s = String(raw ?? '').trim();
+  if (!s) return null;
+  const key = s.toUpperCase().replace(/\./g, '').replace(/\s+/g, ' ');
+  return AGENCY_ALIASES[key] ?? s;
+}
+
 function normalizeSetAside(raw: string): { pattern: string; known: boolean; label: string; codes: string[] } {
   const norm = raw.trim().toUpperCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ');
   for (const fam of SET_ASIDE_FAMILIES) {
@@ -1084,10 +1127,22 @@ async function awardSearchSupabase(args: Record<string, unknown>): Promise<unkno
         `match. Falling back to the authoritative source rather than reporting zero awards on it.`,
     );
   }
+  if (args.state) {
+    // The fast path has no place-of-performance column, so `state` was silently
+    // DROPPED here: {keywords:["cybersecurity"], state:"MD"} returned the same
+    // ten nationwide awards as the unfiltered query, byte for byte (measured
+    // 2026-10-04). Wrong-but-non-empty is worse than a fallback — only the
+    // live API applies place_of_performance_locations (buildFilters), so hand
+    // the query to it rather than answer a filter this path cannot evaluate.
+    throw new Error(
+      `state "${String(args.state)}" is a place-of-performance filter the fast path cannot evaluate. ` +
+        `Falling back to the authoritative source rather than returning nationwide awards as if they were filtered.`,
+    );
+  }
 
   const body = {
     p_keywords: keywordPhrase,
-    p_agency: (args.agency as string) ?? null,
+    p_agency: normalizeAgency(args.agency),
     p_naics: naics,
     p_set_aside: setAside?.pattern ?? null,
     p_start_date: (args.start_date as string) ?? null,
@@ -1161,7 +1216,7 @@ function buildFilters(args: Record<string, unknown>): Record<string, unknown> {
 
   if (args.agency) {
     filters.agencies = [
-      { type: 'awarding', tier: 'toptier', name: args.agency as string },
+      { type: 'awarding', tier: 'toptier', name: normalizeAgency(args.agency) as string },
     ];
   }
 
