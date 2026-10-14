@@ -3,7 +3,7 @@
   "name": "io.github.pipeworx-io/usaspending",
   "title": "Usaspending",
   "description": "USAspending MCP — Federal spending data from USAspending.gov API",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "websiteUrl": "https://pipeworx.io/packs/usaspending",
   "repository": {
     "url": "https://github.com/pipeworx-io/mcp-usaspending",

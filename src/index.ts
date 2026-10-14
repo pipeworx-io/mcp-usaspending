@@ -743,7 +743,11 @@ async function retryFetch(url: string, opts?: RequestInit): Promise<Response> {
       // unreachable (typically CF egress block); retrying with the same
       // path is pointless — bail immediately so safe() in compound tools
       // gets its fallback fast.
-      if (err instanceof Error && err.name === 'AbortError') throw err;
+      if (err instanceof Error && err.name === 'AbortError') {
+        // 2026-10-14: the raw AbortError booked as class=error (ours); 12 of 16
+        // error rows in 3d were exactly this 8s abort on the live-API relay.
+        throw new Error(`upstream_down: USAspending did not answer within ${FETCH_TIMEOUT_MS / 1000}s (${new URL(url).hostname}); retry shortly.`);
+      }
       if (i === 1) throw err;
     }
   }

@@ -2,7 +2,7 @@
 
 The U.S. Treasury's USAspending.gov data on federal awards: contracts, grants, loans, and direct payments. Every dollar the federal government has awarded since 2008 (with patchier coverage going back to 2001), broken down by recipient, agency, sub-agency, NAICS code, and place of performance. Free, no auth.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1688+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1800+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
 
 ## Why this matters for AI agents
 
@@ -143,7 +143,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1688+ data sources. The
+Both URLs reach the same gateway and the same 1800+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
