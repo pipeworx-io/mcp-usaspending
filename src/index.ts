@@ -807,6 +807,43 @@ async function awardCount(filters: Record<string, unknown>): Promise<number | nu
   }
 }
 
+// ── Award-row semantics ─────────────────────────────────────────────────
+//
+// Two things about an award row are not self-evident and were costing callers
+// a wrong answer in silence (fleet #3140).
+//
+// `total_outlays: null` does NOT mean nothing has been paid. Outlays are
+// joined from Treasury account (File C) data, and DoD contract awards are
+// largely not linked to it: measured 2026-10-15, 157 of Anduril's 159 DoD
+// awards carried a null outlay while the one DHS award carried
+// $102,177,321.75. The federal-account count endpoint confirms the cause —
+// 0 linked accounts for the DoD award CONT_AWD_H9240224F0057_9700_… against
+// 206 for the DHS award 70B02C26F00000035. So the null is an absence of
+// REPORTING, and a reader treating it as an absence of SPENDING concludes a
+// live contract is unpaid. Every row now carries `outlays_reported`, and the
+// response says what the null means rather than leaving it to be guessed.
+const OUTLAYS_NOTE =
+  'total_outlays: null means NOT REPORTED, not zero paid — read `outlays_reported` on each row. ' +
+  'Outlays are joined from Treasury account (File C) data and most Department of Defense contract ' +
+  'awards are not linked to it, so DoD rows usually carry no outlay figure even where money has been ' +
+  'paid. Recent awards lag as well: DoD contract data is published on roughly a 90-day delay.';
+
+// The date filter selects awards ACTIVE in the window — an award that started
+// in 2019 and still runs is returned for a 2024-2026 window — and
+// `award_amount` is the award's lifetime obligated total, not the amount
+// obligated inside the window. Summing award_amount over a window therefore
+// overstates window spending, sometimes by years of it.
+const PERIOD_NOTE =
+  'start_date/end_date select awards ACTIVE during the window, not awards signed in it — awards that ' +
+  'began years earlier and are still running are included. `award_amount` is the award\'s LIFETIME ' +
+  'obligated total, not the amount obligated during the window, so summing it does not give spending ' +
+  'for the period. For money moved inside a date range use usa_spending_trends or usa_spending_by_category.';
+
+/** True when the upstream actually published an outlay figure (0 counts; null does not). */
+function outlaysReported(v: unknown): boolean {
+  return v !== null && v !== undefined;
+}
+
 // ── Tool definitions ────────────────────────────────────────────────────
 
 const tools: McpToolExport['tools'] = [
@@ -831,7 +868,7 @@ const tools: McpToolExport['tools'] = [
   {
     name: 'usa_award_search',
     description:
-      'Search US federal PROCUREMENT CONTRACTS / government contract awards for goods and services. Use recipient_name for "contracts won by Lockheed Martin"; keywords searches award descriptions/topics, not contractor identity. Dates are optional and default to the last 12 months for "recent" questions. Returns recipient, award amount, dates, and contract type.',
+      'Search US federal PROCUREMENT CONTRACTS / government contract awards for goods and services. Use recipient_name for "contracts won by Lockheed Martin"; keywords searches award descriptions/topics, not contractor identity. Dates are optional and default to the last 12 months for "recent" questions. Dates select awards ACTIVE in the window (not signed in it) and award_amount is the award\'s LIFETIME obligation, so do not sum it as spending for the period. Results are paged: 100 per page max — pass `page` (and read `page_metadata.has_next`) to reach the rest. Returns recipient, award amount, outlays (with an outlays_reported flag, since DoD awards usually report none), dates, and contract type.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -847,7 +884,8 @@ const tools: McpToolExport['tools'] = [
         end_date: { type: 'string', description: 'End date in YYYY-MM-DD format' },
         naics: { type: 'string', description: 'NAICS code to filter by (e.g., "541512")' },
         set_aside: { type: 'string', description: 'Small-business set-aside filter. Accepts a family name ("HUBZone", "8(a)", "WOSB", "EDWOSB", "SDVOSB", "Veteran", "Small business", "Indian"), a FAR code ("HZC", "8AN", "SDVOSBC"), or the literal USAspending description ("HUBZONE SET-ASIDE"). Matches both the set-aside and sole-source variants of a family.' },
-        limit: { type: 'number', description: 'Number of results (1-100, default 10)' },
+        limit: { type: 'number', description: 'Number of results per page (1-100, default 10)' },
+        page: { type: 'number', description: '1-based page number (default 1). total_results can exceed limit; page through with this and read page_metadata.has_next / total_pages to reach every row.' },
       },
       required: [],
     },
@@ -1100,6 +1138,7 @@ async function awardSearchSupabase(args: Record<string, unknown>): Promise<unkno
   const kws = args.keywords;
   const keywordPhrase = Array.isArray(kws) ? kws.join(' ') : (kws as string | undefined) ?? null;
   const limit = Math.min(100, Math.max(1, (args.limit as number) ?? 10));
+  const page = normalizePage(args.page);
 
   const setAside = args.set_aside ? normalizeSetAside(String(args.set_aside)) : null;
   const naics = args.naics ? String(args.naics) : null;
@@ -1129,6 +1168,17 @@ async function awardSearchSupabase(args: Record<string, unknown>): Promise<unkno
     throw new Error(
       `naics "${naics}" is not a 6-digit NAICS code, which is the only form the fast path can ` +
         `match. Falling back to the authoritative source rather than reporting zero awards on it.`,
+    );
+  }
+  if (page > 1) {
+    // Same class as the filters below: this path takes a row limit but no
+    // offset, so it can only ever serve page 1. Answering page 2 from it would
+    // hand back page 1's rows under a different page number — the quietest
+    // possible wrong answer. The authoritative source pages properly; send it
+    // there rather than inventing an offset here.
+    throw new Error(
+      `page ${page} cannot be served by the fast path, which has no offset. Falling back to the ` +
+        `authoritative source so that paging is coherent rather than repeating page 1.`,
     );
   }
   if (args.state) {
@@ -1169,23 +1219,45 @@ async function awardSearchSupabase(args: Record<string, unknown>): Promise<unkno
     if (!res.ok) throw await httpError(res, 'mirror');
     const rows = (await res.json()) as Array<Record<string, unknown>>;
 
+    const awards = rows.map((r) => ({
+      award_id: r.award_id ?? null,
+      recipient_name: r.recipient_name ?? null,
+      award_amount: r.award_amount ?? null,
+      total_outlays: r.total_outlays ?? null,
+      outlays_reported: outlaysReported(r.total_outlays),
+      start_date: r.start_date ?? null,
+      end_date: r.end_date ?? null,
+      awarding_agency: r.awarding_agency ?? null,
+      awarding_sub_agency: r.awarding_sub_agency ?? null,
+      description: r.description ?? null,
+      naics_code: r.naics_code ?? null,
+      contract_type: r.contract_type ?? null,
+    }));
+    // This path reports no catalog total, so `total_results` is the row count
+    // in THIS response and must not be read as "that is all there is" — say
+    // so rather than let a capped page read as a complete answer.
+    const hasNext = awards.length === limit;
     return {
       period: args._period ?? null,
-      total_results: rows.length,
+      period_note: PERIOD_NOTE,
+      total_results: awards.length,
+      total_results_note:
+        'total_results here is the number of rows in this response, not a verified catalog total — ' +
+        'no total is published for this query shape. has_next says whether more rows exist.',
       limit,
-      awards: rows.map((r) => ({
-        award_id: r.award_id ?? null,
-        recipient_name: r.recipient_name ?? null,
-        award_amount: r.award_amount ?? null,
-        total_outlays: r.total_outlays ?? null,
-        start_date: r.start_date ?? null,
-        end_date: r.end_date ?? null,
-        awarding_agency: r.awarding_agency ?? null,
-        awarding_sub_agency: r.awarding_sub_agency ?? null,
-        description: r.description ?? null,
-        naics_code: r.naics_code ?? null,
-        contract_type: r.contract_type ?? null,
-      })),
+      page: 1,
+      page_metadata: {
+        page: 1,
+        per_page: limit,
+        returned: awards.length,
+        has_next: hasNext,
+        has_previous: false,
+        total_results: null,
+        total_pages: null,
+      },
+      awards,
+      outlays_note: OUTLAYS_NOTE,
+      outlays_unreported_rows: awards.filter((a) => !a.outlays_reported).length,
       _source: 'archive',
     };
   } finally {
@@ -1264,12 +1336,16 @@ type SpendingAgencyResult = {
 
 type AwardResult = {
   results?: Record<string, unknown>[];
+  // What /search/spending_by_award/ actually sends. `total` and `limit` were
+  // declared here and are not on the wire (see the awardCount comment above);
+  // a type that names fields the API never sends is what let
+  // `page_metadata?.total ?? 0` look correct while reporting 0 on every call.
   page_metadata?: {
-    page: number;
-    total: number;
-    limit: number;
-    last_record_unique_id?: number;
-    last_record_sort_value?: string;
+    page?: number;
+    hasNext?: boolean;
+    hasPrevious?: boolean;
+    last_record_unique_id?: number | string | null;
+    last_record_sort_value?: string | null;
   };
 };
 
@@ -1347,6 +1423,7 @@ async function spendingByAgency(args: Record<string, unknown>) {
 async function awardSearch(args: Record<string, unknown>) {
   const dated = withRecentWindow(args);
   const limit = Math.min(100, Math.max(1, (args.limit as number) ?? 10));
+  const page = normalizePage(args.page);
   const filters = buildFilters(dated);
 
   const body = {
@@ -1365,7 +1442,7 @@ async function awardSearch(args: Record<string, unknown>) {
       'Contract Award Type',
     ],
     limit,
-    page: 1,
+    page,
     sort: 'Award Amount',
     order: 'desc',
   };
@@ -1375,24 +1452,31 @@ async function awardSearch(args: Record<string, unknown>) {
     awardCount(filters),
   ]);
   const rows = data.results ?? [];
+  const awards = rows.map((r) => ({
+    award_id: r['Award ID'] ?? null,
+    recipient_name: r['Recipient Name'] ?? null,
+    award_amount: r['Award Amount'] ?? null,
+    total_outlays: r['Total Outlays'] ?? null,
+    outlays_reported: outlaysReported(r['Total Outlays']),
+    start_date: r['Start Date'] ?? null,
+    end_date: r['End Date'] ?? null,
+    awarding_agency: r['Awarding Agency'] ?? null,
+    awarding_sub_agency: r['Awarding Sub Agency'] ?? null,
+    description: r['Description'] ?? null,
+    naics_code: r['NAICS Code'] ?? null,
+    contract_type: r['Contract Award Type'] ?? null,
+  }));
 
   return {
     period: dated._period,
-    total_results: counted ?? rows.length,
+    period_note: PERIOD_NOTE,
+    total_results: counted ?? awards.length,
     limit,
-    awards: rows.map((r) => ({
-      award_id: r['Award ID'] ?? null,
-      recipient_name: r['Recipient Name'] ?? null,
-      award_amount: r['Award Amount'] ?? null,
-      total_outlays: r['Total Outlays'] ?? null,
-      start_date: r['Start Date'] ?? null,
-      end_date: r['End Date'] ?? null,
-      awarding_agency: r['Awarding Agency'] ?? null,
-      awarding_sub_agency: r['Awarding Sub Agency'] ?? null,
-      description: r['Description'] ?? null,
-      naics_code: r['NAICS Code'] ?? null,
-      contract_type: r['Contract Award Type'] ?? null,
-    })),
+    page,
+    page_metadata: pageMetadata(page, limit, awards.length, counted, data.page_metadata?.hasNext),
+    awards,
+    outlays_note: OUTLAYS_NOTE,
+    outlays_unreported_rows: awards.filter((a) => !a.outlays_reported).length,
   };
 }
 
@@ -1510,6 +1594,39 @@ async function recipientProfile(args: Record<string, unknown>) {
       naics_code: r['NAICS Code'] ?? null,
       contract_type: r['Contract Award Type'] ?? null,
     })),
+  };
+}
+
+/** 1-based page, defaulting to 1; anything unusable becomes 1 rather than NaN. */
+function normalizePage(raw: unknown): number {
+  const n = Math.floor(Number(raw ?? 1));
+  return Number.isFinite(n) && n >= 1 ? n : 1;
+}
+
+/**
+ * Say where the caller is in the result set and whether anything is left.
+ *
+ * `has_next` prefers the upstream's own hasNext. When the count endpoint
+ * answered we can also derive it, and when neither is available we fall back
+ * to "this page came back full", which can be one page pessimistic on an exact
+ * multiple — it never claims there is nothing more when there is.
+ */
+function pageMetadata(
+  page: number,
+  perPage: number,
+  returned: number,
+  total: number | null,
+  upstreamHasNext: boolean | undefined,
+) {
+  const derived = total !== null && total !== undefined ? page * perPage < total : returned === perPage;
+  return {
+    page,
+    per_page: perPage,
+    returned,
+    has_next: upstreamHasNext ?? derived,
+    has_previous: page > 1,
+    total_results: total ?? null,
+    total_pages: total !== null && total !== undefined ? Math.max(1, Math.ceil(total / perPage)) : null,
   };
 }
 
