@@ -2,7 +2,7 @@
 
 The U.S. Treasury's USAspending.gov data on federal awards: contracts, grants, loans, and direct payments. Every dollar the federal government has awarded since 2008 (with patchier coverage going back to 2001), broken down by recipient, agency, sub-agency, NAICS code, and place of performance. Free, no auth.
 
-Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1815+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
+Part of [Pipeworx](https://pipeworx.io) — an MCP gateway connecting AI agents to 1857+ live data sources. This is an independent, unofficial integration — not affiliated with, endorsed by, or published by the upstream provider.
 
 ## Why this matters for AI agents
 
@@ -40,6 +40,28 @@ For company-level analysis, contracts are usually what matters. Grants matter fo
 - **NAICS codes for "we sell IT services."** A single contractor can have dozens of NAICS designations. Filtering by NAICS gets you only the awards classified that way; cross-NAICS analysis needs careful aggregation.
 - **Lag.** Most awards appear within 30 days of obligation. The very-most-recent quarter is incomplete and revises upward.
 - **Unique award IDs.** Awards have stable IDs (PIIDs for contracts, FAINs for grants). Use these for citation; recipient-level totals are the rolled-up view.
+- **An IDV is not a contract type, and `IDV_A..IDV_E` is not the IDV set.**
+  `usa_award_search` / `usa_recipient_profile` search contract types A-D and
+  return IDVs as a SEPARATE `idvs` array, because a single request mixing
+  contract and IDV codes is rejected upstream with HTTP 422. The full code set
+  is `IDV_A, IDV_B, IDV_B_A, IDV_B_B, IDV_B_C, IDV_C, IDV_D, IDV_E` — the
+  `IDV_B` subdivisions are load-bearing: CRS-2, NASA Launch Services II and
+  CCtCap are all `IDV_B_B`, so filtering on `IDV_A..IDV_E` returns a few $0
+  BPA/BOA/FSS rows and none of the money, which looks like a working IDV
+  search. Read `idv_status` on every response: it says whether IDVs are in
+  this answer, and reading only `awards` understated SpaceX/NASA by $6.79B
+  (fleet #3386).
+- **An IDV's dollars and its child orders' dollars are DISJOINT — combining
+  them is correct, not a double count.** The IDV row carries obligations
+  booked on the umbrella itself and each order carries its own; the parent is
+  not a rollup. Measured: `NNK14MA74C` own obligation $1,241,839,006 against
+  12 children summing $4,101,857,376, and `80KSC022DA109` is a $0 IDV with
+  children summing $34,296,771 — a rollup would make those equal. The only
+  error available here is understating by dropping IDVs. Group an order under
+  its umbrella with `parent_idv_award_id` (contract rows) and
+  `child_orders_in_results` (IDV rows); the parent link is parsed from
+  `generated_internal_id`, since the search endpoint publishes no
+  `parent_award_piid` and the detail endpoint returns null for it.
 
 ## Recompete calendar — `usa_expiring_awards` / `usa_incumbent_profile`
 
@@ -143,7 +165,7 @@ directly, instead of just this one's:
 }
 ```
 
-Both URLs reach the same gateway and the same 1815+ data sources. The
+Both URLs reach the same gateway and the same 1857+ data sources. The
 only difference is which pack's tools are listed **directly**; `ask_pipeworx`
 reaches all of them from either one.
 
@@ -157,10 +179,12 @@ curl -X POST https://gateway.pipeworx.io/v1/tools/usa_spending_by_agency \
 
 No account needed for the first calls. Inspect any tool: `GET https://gateway.pipeworx.io/v1/tools/usa_spending_by_agency`. Find one: `POST https://gateway.pipeworx.io/v1/tools/search_packs` with `{"query":"..."}`.
 
-## Standalone (no gateway account)
+## Run it from npm
 
-This package also runs as a local stdio MCP server — no Pipeworx account, no
-gateway round-trip:
+`@pipeworx/mcp-usaspending` is a local stdio bridge to the Pipeworx gateway: your MCP client
+starts it with `npx`, and it forwards every call to the same
+`https://gateway.pipeworx.io/usaspending/mcp` endpoint shown above. It needs network access;
+there is no offline mode.
 
 ```json
 {
@@ -173,15 +197,18 @@ gateway round-trip:
 }
 ```
 
-Or run it directly to confirm it starts:
+Without a key it calls anonymously, capped at 50 calls a day. A free account
+raises that to 200 a day: get a key at https://pipeworx.io/signup and add
+`"env": { "PIPEWORX_API_KEY": "<your key>" }` to the server entry.
+The key is sent as a Bearer token, the same way a hosted connection sends it,
+so calls are metered and billed exactly as they are there.
 
-```bash
-npx -y @pipeworx/mcp-usaspending
-```
+It lists **only** this pack's tools by default. Set `PIPEWORX_META_TOOLS=1` to
+also list `ask_pipeworx` and the other gateway-wide tools.
 
-It speaks MCP over stdin/stdout and answers `initialize`/`tools/list`/`tools/call`
-for **only** this pack's tools — none of the shared meta-tools the gateway
-connection above adds. Same source, same tools, no ask_pipeworx routing.
+Behind an HTTPS proxy: Node's built-in `fetch` does not read `HTTPS_PROXY` by
+default. Newer Node releases honour it when `NODE_USE_ENV_PROXY=1` is set; check
+your Node version's documentation.
 
 ## Using with ask_pipeworx
 
